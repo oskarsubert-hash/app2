@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Allergy Scanner</title>
+
+  <script src="https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.10/html5-qrcode.min.js"></script>
+
+  <style>
+    body {
+      font-family: Arial;
+      margin: 0;
+      text-align: center;
+      background: #f5f5f5;
+    }
+
+    .screen {
+      display: none;
+      padding: 20px;
+    }
+
+    .active {
+      display: block;
+    }
+
+    button {
+      padding: 14px;
+      font-size: 18px;
+      margin: 10px;
+      width: 85%;
+      border-radius: 10px;
+      border: none;
+      background: #222;
+      color: white;
+    }
+
+    #reader {
+      width: 100%;
+      margin-top: 10px;
+    }
+
+    .status {
+      font-size: 26px;
+      margin-top: 10px;
+    }
+
+    .green { color: green; }
+    .red { color: red; }
+    .yellow { color: orange; }
+
+    #hint {
+      font-size: 14px;
+      color: #666;
+      margin-top: 10px;
+    }
+  </style>
+</head>
+
+<body>
+
+<!-- ALLERGIES -->
+<div id="allergies" class="screen active">
+  <h2>Wähle deine Allergien</h2>
+
+  <label><input type="checkbox" value="nuts"> Nüsse</label><br>
+  <label><input type="checkbox" value="milk"> Milch</label><br>
+  <label><input type="checkbox" value="gluten"> Gluten</label><br>
+  <label><input type="checkbox" value="eggs"> Ei</label><br>
+
+  <button onclick="saveAllergies()">Start</button>
+</div>
+
+<!-- MENU -->
+<div id="menu" class="screen">
+  <h2>Menü</h2>
+  <button onclick="startScanner()">📷 Scannen</button>
+  <button onclick="show('history')">🕘 Verlauf</button>
+</div>
+
+<!-- SCANNER -->
+<div id="scan" class="screen">
+  <h2>Scanner</h2>
+  <div id="reader"></div>
+  <p id="hint">Halte die Kamera ruhig auf den Barcode</p>
+  <button onclick="stopScanner()">Zurück</button>
+</div>
+
+<!-- RESULT -->
+<div id="result" class="screen">
+  <h2 id="product"></h2>
+  <div id="status" class="status"></div>
+  <p id="explain"></p>
+  <button onclick="saveHistory()">OK</button>
+</div>
+
+<!-- HISTORY -->
+<div id="history" class="screen">
+  <h2>Verlauf</h2>
+  <ul id="list"></ul>
+  <button onclick="show('menu')">Zurück</button>
+</div>
+
+<script>
+
+let scanner;
+let currentProduct = null;
+
+function show(id){
+  document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+  document.getElementById(id).classList.add('active');
+
+  if(id === 'history') loadHistory();
+}
+
+// -------------------- ALLERGIES --------------------
+
+function saveAllergies(){
+  const selected = [...document.querySelectorAll('input:checked')].map(x => x.value);
+  localStorage.setItem("allergies", JSON.stringify(selected));
+  show('menu');
+}
+
+// -------------------- SCANNER --------------------
+
+async function startScanner(){
+
+  show('scan');
+
+  document.getElementById("reader").innerHTML = "";
+
+  scanner = new Html5Qrcode("reader");
+
+  try {
+    const cameras = await Html5Qrcode.getCameras();
+
+    if(!cameras || cameras.length === 0){
+      alert("Keine Kamera gefunden");
+      return;
+    }
+
+    const cameraId = cameras[0].id;
+
+    await scanner.start(
+      cameraId,
+      {
+        fps: 10,
+        qrbox: { width: 250, height: 250 }
+      },
+      onScanSuccess
+    );
+
+  } catch(err){
+    console.log(err);
+    alert("Kamera konnte nicht gestartet werden");
+  }
+}
+
+function stopScanner(){
+  if(scanner){
+    scanner.stop().then(() => scanner.clear()).catch(()=>{});
+  }
+  show('menu');
+}
+
+// -------------------- SCAN RESULT --------------------
+
+function onScanSuccess(code){
+
+  stopScanner();
+
+  fetch(`https://world.openfoodfacts.org/api/v0/product/${code}.json`)
+    .then(res => res.json())
+    .then(data => {
+
+      if(!data.product){
+        showError("Produkt nicht gefunden");
+        return;
+      }
+
+      analyze(data.product);
+    })
+    .catch(() => showError("Netzwerkfehler"));
+}
+
+// -------------------- ANALYSE --------------------
+
+function analyze(product){
+
+  const allergies = JSON.parse(localStorage.getItem("allergies")) || [];
+  const tags = product.allergens_tags || [];
+
+  let status = "🟢 SICHER";
+  let explain = "Keine Allergene gefunden";
+  let color = "green";
+
+  for(let a of allergies){
+    if(tags.some(t => t.includes(a))){
+      status = "🔴 NICHT ESSEN";
+      explain = "Enthält " + a;
+      color = "red";
+    }
+  }
+
+  currentProduct = {
+    name: product.product_name || "Unbekannt",
+    status
+  };
+
+  document.getElementById("product").innerText = currentProduct.name;
+  document.getElementById("status").innerText = status;
+  document.getElementById("status").className = "status " + color;
+  document.getElementById("explain").innerText = explain;
+
+  show('result');
+}
+
+// -------------------- ERROR --------------------
+
+function showError(msg){
+  document.getElementById("product").innerText = "Fehler";
+  document.getElementById("status").innerText = "⚠️";
+  document.getElementById("explain").innerText = msg;
+  show('result');
+}
+
+// -------------------- HISTORY --------------------
+
+function saveHistory(){
+  let history = JSON.parse(localStorage.getItem("history")) || [];
+  history.push(currentProduct);
+  localStorage.setItem("history", JSON.stringify(history));
+  show('menu');
+}
+
+function loadHistory(){
+  let history = JSON.parse(localStorage.getItem("history")) || [];
+  let list = document.getElementById("list");
+
+  list.innerHTML = "";
+
+  history.forEach(item => {
+    let li = document.createElement("li");
+    li.innerText = item.name + " - " + item.status;
+    list.appendChild(li);
+  });
+}
+
+</script>
+
+</body>
+</html>
